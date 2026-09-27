@@ -13,7 +13,7 @@ from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.responses import StreamingResponse, JSONResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse, Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from pyrogram import Client, filters
@@ -269,6 +269,14 @@ app.add_middleware(
 def home():
     return {"status": "SevenAnime Engine Active 🚀"}
 
+# 🎬 WEB PLAYER ENDPOINT
+@app.get("/player", response_class=HTMLResponse)
+def get_web_player():
+    if os.path.exists("videoplayer.html"):
+        with open("videoplayer.html", "r", encoding="utf-8") as f:
+            return f.read()
+    return "<h2>videoplayer.html file nahi mili! Directory me file check karein.</h2>"
+
 @app.get("/api/all-anime")
 def get_all_anime():
     return anime_database
@@ -399,4 +407,4 @@ async def stream_video(chat_id: str, message_id: str, request: Request, range: s
 @app.api_route("/download/{chat_id}/{message_id}.mp4", methods=["GET", "HEAD", "OPTIONS"])
 async def download_video(chat_id: str, message_id: str, request: Request, range: str = Header(None)):
     return await get_media_response(chat_id, message_id, request, range, is_download=True)
-            
+               
