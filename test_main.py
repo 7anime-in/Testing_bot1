@@ -1,6 +1,13 @@
 import os
 import re
 import asyncio
+
+# 🚨 FIX FOR RUNTIME ERROR: SET EVENT LOOP BEFORE PYROGRAM IMPORT
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from urllib.parse import quote
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -41,7 +48,6 @@ def is_video_message(message) -> bool:
 def parse_anime_info(caption: str, forward_title: str = ""):
     text = caption or ""
 
-    # Official vs Unofficial/Fandub Detection
     dub_type = "official"
     if re.search(r"\b(unofficial|fandub|fan_dub|fan-dub|fan dub)\b", text, re.IGNORECASE) or "#unofficial" in text.lower() or "#fandub" in text.lower():
         dub_type = "unofficial"
@@ -51,7 +57,6 @@ def parse_anime_info(caption: str, forward_title: str = ""):
     season_match = re.search(r"(?:Season|S)[\s\-\_]*0*(\d+)", text, re.IGNORECASE)
     season = season_match.group(1) if season_match else "1"
 
-    # Improved Episode Extraction Regex
     ep_match = re.search(r"(?:Episode|Ep|E)[\s\-\_]*0*(\d+)", text, re.IGNORECASE)
     if not ep_match:
         clean_text = re.sub(r"\b(1080p|720p|480p|360p|2160p|x264|x265|hevc|2023|2024|2025|2026)\b", "", text, flags=re.IGNORECASE)
@@ -291,7 +296,6 @@ async def get_media_response(
     if request.method == "OPTIONS":
         return Response(status_code=200, headers={"Access-Control-Allow-Origin": "*"})
 
-    # Stripping extensions if passed in URL
     msg_id_clean = int(str(message_id).replace(".mp4", "").replace(".mkv", ""))
 
     if not pyro_client:
@@ -354,7 +358,6 @@ async def get_media_response(
     if request.method == "HEAD":
         return Response(status_code=206 if range_header else 200, headers=headers)
 
-    # 🛠 FIXED ACCURATE STREAMER LOGIC FOR ANY CHUNK SIZE
     chunk_size = 1024 * 1024
     start_chunk = from_bytes // chunk_size
     skip_bytes = from_bytes % chunk_size
@@ -364,7 +367,6 @@ async def get_media_response(
         current_skipped = 0
         try:
             async for chunk in pyro_client.stream_media(msg, offset=start_chunk):
-                # Skip partial offset bytes precisely
                 if current_skipped < skip_bytes:
                     if current_skipped + len(chunk) <= skip_bytes:
                         current_skipped += len(chunk)
@@ -397,4 +399,4 @@ async def stream_video(chat_id: str, message_id: str, request: Request, range: s
 @app.api_route("/download/{chat_id}/{message_id}.mp4", methods=["GET", "HEAD", "OPTIONS"])
 async def download_video(chat_id: str, message_id: str, request: Request, range: str = Header(None)):
     return await get_media_response(chat_id, message_id, request, range, is_download=True)
-               
+            
