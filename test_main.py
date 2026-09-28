@@ -20,9 +20,15 @@ from pyrogram import Client, filters
 from pyrogram.errors import PeerIdInvalid, ChannelInvalid, RPCError, FloodWait
 
 # ==================== ENVIRONMENT VARIABLES ====================
-API_ID = int(os.getenv("API_ID", "31169133"))
-API_HASH = os.getenv("API_HASH", "b836f4b836df4cf83c2d475a5ad3b285")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8891627372:AAF8MIvp06YxSmZwRRyGLt8e0rNIJV82q-U")
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Environment variable {name} set nahi hai (Render > Environment me add karein).")
+    return value
+
+API_ID = int(_require_env("API_ID"))
+API_HASH = _require_env("API_HASH")
+BOT_TOKEN = _require_env("BOT_TOKEN")
 APP_URL = os.getenv("APP_URL", "https://sevenanime-http-bot.onrender.com")
 
 CHANNEL_INPUT = os.getenv("CHANNEL_ID", "testing_c1")
@@ -45,25 +51,35 @@ def is_video_message(message) -> bool:
     return False
 
 # ==================== PARSING & DATABASE LOGIC ====================
+def get_forward_title(message) -> str:
+    chat = getattr(message, "forward_from_chat", None)
+    if chat is not None and getattr(chat, "title", None):
+        return chat.title
+    return getattr(message, "forward_sender_name", None) or ""
+
+
 def parse_anime_info(caption: str, forward_title: str = ""):
     text = caption or ""
 
     dub_type = "official"
-    if re.search(r"\b(unofficial|fandub|fan_dub|fan-dub|fan dub)\b", text, re.IGNORECASE) or "#unofficial" in text.lower() or "#fandub" in text.lower():
+    if re.search(r"\b(unofficial|fandub|fan[\s_\-]?dub)\b", text, re.IGNORECASE):
         dub_type = "unofficial"
-    elif "#official" in text.lower():
-        dub_type = "official"
 
-    season_match = re.search(r"(?:Season|S)[\s\-\_]*0*(\d+)", text, re.IGNORECASE)
+    # Season / Episode (S01E05, Season 2, Episode 12, Ep-7 ...)
+    season_match = re.search(r"(?<![A-Za-z])(?:Season|S)[\s\-_.:]*0*(\d+)(?!\d)", text, re.IGNORECASE)
     season = season_match.group(1) if season_match else "1"
 
-    ep_match = re.search(r"(?:Episode|Ep|E)[\s\-\_]*0*(\d+)", text, re.IGNORECASE)
+    ep_match = re.search(r"(?<![A-Za-z])(?:Episode|Ep|E)[\s\-_.:]*0*(\d+)(?!\d)", text, re.IGNORECASE)
+    bare_ep_token = None
     if not ep_match:
-        clean_text = re.sub(r"\b(1080p|720p|480p|360p|2160p|x264|x265|hevc|2023|2024|2025|2026)\b", "", text, flags=re.IGNORECASE)
-        ep_match = re.search(r"(?:[\s\-\_\[]\vert{}^)0*(\d{1,3})(?:[\s\-\_\]]|$|\.mp4|\.mkv)", clean_text)
+        clean_text = re.sub(r"\b(2160p|1080p|720p|480p|360p|x264|x265|hevc|20\d\d)\b", "", text, flags=re.IGNORECASE)
+        ep_match = re.search(r"(?:^|[\s\-_\[])(\d{1,4})(?=$|[\s\-_\]]|\.mp4|\.mkv)", clean_text)
+        if ep_match:
+            bare_ep_token = ep_match.group(1)
 
     episode = int(ep_match.group(1)) if ep_match else 1
 
+    # Anime name
     explicit_name = re.search(r"(?:Anime|Title|Name)\s*:\s*([^\n\r\t|]+)", text, re.IGNORECASE)
 
     if explicit_name:
@@ -78,10 +94,18 @@ def parse_anime_info(caption: str, forward_title: str = ""):
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         raw_title = lines[0] if lines else "Testing Anime"
 
+    if bare_ep_token and not explicit_name:
+        raw_title = re.sub(rf"(?<!\d){re.escape(bare_ep_token)}(?!\d)", " ", raw_title)
+
+    # Title me se episode/season/quality hatao, warna har episode ka alag anime ban jayega
+    clean_title = re.sub(r"(?i)\.(mp4|mkv|webm|avi|mov)\b", " ", raw_title)
+    clean_title = re.sub(r"(?i)\bS\d+\s*E\d+\b", " ", clean_title)
+    clean_title = re.sub(r"(?i)(?<![A-Za-z])(season|episode|ep|s|e)[\s\-_.:]*\d+(?!\d)", " ", clean_title)
+    clean_title = re.sub(r"(?i)\bin\s+(hindi|english|urdu|tamil|telugu)\b", " ", clean_title)
     clean_title = re.sub(
-        r"(?i)\b(in|hindi|dubbed|dub|sub|official|unofficial|fandub|1080p|720p|480p|fhd|hd|hevc|x264|x265|episode|season|language|quality|main channel)\b",
-        "",
-        raw_title,
+        r"(?i)\b(hindi|dubbed|dub|sub|official|unofficial|fandub|2160p|1080p|720p|480p|360p|4k|fhd|hd|hevc|x264|x265|episode|season|language|quality|main channel)\b",
+        " ",
+        clean_title,
     )
     clean_title = re.sub(r"[^\w\s]", " ", clean_title)
     clean_title = re.sub(r"\s+", " ", clean_title).strip().title()
@@ -147,26 +171,28 @@ async def auto_scan_channels():
                             if is_video_message(message):
                                 has_media_in_chunk = True
                                 caption = message.caption or getattr(message.video or message.document, "file_name", "") or ""
-                                forward_title = (
-                                    message.forward_from_chat.title
-                                    if message.forward_from_chat
-                                    else (message.forward_sender_name or "")
-                                )
+                                forward_title = get_forward_title(message)
                                 add_to_database(str(target_chat), message.id, caption, forward_title)
 
-                    if not has_media_in_chunk:
-                        empty_count += 1
-                    else:
+                    # Jab tak channel me koi bhi message mil raha hai scan chalta rahega
+                    has_any_message = any(m and not m.empty for m in (messages or []))
+                    if has_any_message:
                         empty_count = 0
+                    else:
+                        empty_count += 1
 
                     current_id += chunk_size
                     await asyncio.sleep(0.1)
 
                 except FloodWait as e:
                     await asyncio.sleep(e.value + 1)
+                except (PeerIdInvalid, ChannelInvalid) as e:
+                    print(f"⚠️ Channel '{target_chat}' access nahi ho raha (bot channel me admin hai?): {e}")
+                    break
                 except Exception as e:
                     print(f"Batch fetch info at ID {current_id}: {e}")
                     current_id += chunk_size
+                    empty_count += 1
 
             print(f"✅ Channel '{target_chat}' scanned completely!")
         except Exception as e:
@@ -222,22 +248,20 @@ async def lifespan(app: FastAPI):
         base_url = APP_URL.rstrip("/")
 
         caption = message.caption or getattr(message.video or message.document, "file_name", "") or ""
-        forward_title = (
-            message.forward_from_chat.title
-            if message.forward_from_chat
-            else (message.forward_sender_name or "")
-        )
+        forward_title = get_forward_title(message)
 
         add_to_database(chat_identifier, msg_id, caption, forward_title)
 
         anime_name, season_num, ep_num, dub_type = parse_anime_info(caption, forward_title)
         clean_chat = chat_identifier.replace("@", "")
+        card_slug = anime_name.lower().replace(" ", "_")
         stream_url = f"{base_url}/stream/{clean_chat}/{msg_id}.mp4"
         download_url = f"{base_url}/download/{clean_chat}/{msg_id}"
 
         await message.reply_text(
             f"🎬 **Added to Database!**\n\n"
             f"⛩️ **Anime:** `{anime_name}`\n"
+            f"🔖 **Card Slug (index.html data-slug):** `{card_slug}`\n"
             f"🎙️ **Type:** `{dub_type.upper()}`\n"
             f"📦 **Season:** `{season_num}` | **Episode:** `{ep_num}`\n"
             f"📺 **Stream:** `{stream_url}`\n"
@@ -276,6 +300,20 @@ def get_web_player():
         with open("videoplayer.html", "r", encoding="utf-8") as f:
             return f.read()
     return "<h2>videoplayer.html file nahi mili! Directory me file check karein.</h2>"
+
+def _serve_html(filename: str):
+    if os.path.exists(filename):
+        with open(filename, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    return HTMLResponse(f"<h2>{filename} nahi mili!</h2>", status_code=404)
+
+@app.get("/index.html", response_class=HTMLResponse)
+def get_index_page():
+    return _serve_html("index.html")
+
+@app.get("/videoplayer.html", response_class=HTMLResponse)
+def get_videoplayer_page():
+    return _serve_html("videoplayer.html")
 
 @app.get("/api/all-anime")
 def get_all_anime():
@@ -337,7 +375,10 @@ async def get_media_response(
             start = range_match.group(1)
             end = range_match.group(2)
             from_bytes = int(start) if start else 0
-            until_bytes = int(end) if end else file_size - 1
+            until_bytes = min(int(end), file_size - 1) if end else file_size - 1
+
+    if from_bytes >= file_size or from_bytes > until_bytes:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
 
     chunk_length = until_bytes - from_bytes + 1
 
@@ -355,13 +396,15 @@ async def get_media_response(
         "Content-Type": mime_type,
         "Content-Disposition": disposition,
         "Accept-Ranges": "bytes",
-        "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
         "Content-Length": str(chunk_length),
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Headers": "*",
         "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges, Content-Type, Content-Disposition",
         "Cache-Control": "no-cache",
     }
+
+    if range_header:
+        headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
 
     if request.method == "HEAD":
         return Response(status_code=206 if range_header else 200, headers=headers)
@@ -391,8 +434,10 @@ async def get_media_response(
 
                 yield chunk
                 bytes_sent += len(chunk)
-        except (asyncio.CancelledError, Exception):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"Stream error: {e}")
 
     status_code = 206 if range_header else 200
     return StreamingResponse(media_streamer(), status_code=status_code, headers=headers)
@@ -407,4 +452,5 @@ async def stream_video(chat_id: str, message_id: str, request: Request, range: s
 @app.api_route("/download/{chat_id}/{message_id}.mp4", methods=["GET", "HEAD", "OPTIONS"])
 async def download_video(chat_id: str, message_id: str, request: Request, range: str = Header(None)):
     return await get_media_response(chat_id, message_id, request, range, is_download=True)
-               
+
+    
